@@ -55,7 +55,7 @@ wgStop.Wait()
 
 ## Test
 I prepared simple stress test for the Monitor that precisely logs every
-read/write's start and end. You can clone repo and rust the test by command:
+read/write's start and end. You can clone repo and run the test by command:
 ```bash
 go test -race -run TestRWMonitor
 ```
