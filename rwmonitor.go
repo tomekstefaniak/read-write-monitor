@@ -1,3 +1,7 @@
+// Package rwmonitor implements a read-write monitor using the stateful goroutine
+// pattern. A single goroutine owns all shared state and processes requests via
+// channels, maintaining a FIFO queue that preserves arrival order while batching
+// concurrent reads.
 package rwmonitor
 
 import (
@@ -6,50 +10,58 @@ import (
 	"sync/atomic"
 )
 
+// ReadReq is a request to perform a read operation.
+// ResChan must be a buffered channel of capacity 1.
 type ReadReq[T any] struct {
 	ResChan chan ReadRes[T] // Channel to send the read result
 }
 
+// ReadRes holds the result of a read operation.
 type ReadRes[T any] struct {
 	Data T     // Data read
 	Err  error // Error encountered during read
 }
 
+// WriteReq is a request to perform a write operation.
+// ResChan must be a buffered channel of capacity 1.
 type WriteReq[T any] struct {
-	Data    T          // Data to write
+	Data    T         // Data to write
 	ResChan chan error // Channel to send the write result
 }
 
+// RWMonitor manages concurrent read and write access to a resource.
+// Send ReadReq or WriteReq values to RequestsChan to queue operations.
 type RWMonitor[T any] struct {
 	requestsQueue  *list.List           // requestsQueue of processes waiting to read or write
-	RequestsChan   chan interface{}     // Channel to receive requests
+	RequestsChan   chan any              // Channel to receive requests
 	readFunc       func() (T, error)    // Function to read data
 	readersCount   int                  // Number of readers currently reading
 	readersCountMu sync.Mutex           // Mutex to protect access to readers field
 	writeFunc      func(T) error        // Function to write data
-	writing        int32                // Change writing flag to atomic int
-	checkQueueChan chan struct{}        // Channel to check the request queue
+	writing        int32                // Atomic flag indicating an active write operation (1 = writing, 0 = idle)
+	checkQueueChan chan struct{}         // Channel to check the request queue
 	StopChan       chan *sync.WaitGroup // Channel to stop the RWMonitor
 }
 
+// NewRWMonitor creates a new RWMonitor with the given read and write functions.
+// Call StartRWMonitor in a goroutine to begin processing requests.
 func NewRWMonitor[T any](
 	readFunc func() (T, error),
 	writeFunc func(T) error,
 ) *RWMonitor[T] {
 	return &RWMonitor[T]{
 		requestsQueue:  list.New(),
-		RequestsChan:   make(chan interface{}),
+		RequestsChan:   make(chan any),
 		readFunc:       readFunc,
-		readersCount:   0,
-		readersCountMu: sync.Mutex{},
 		writeFunc:      writeFunc,
-		writing:        0,
 		checkQueueChan: make(chan struct{}, 1),
 		StopChan:       make(chan *sync.WaitGroup),
 	}
 }
 
-// StartRWMonitor starts the RWMonitor that manages read and write requests
+// StartRWMonitor runs the monitor loop. Must be called in a goroutine.
+// It processes requests from RequestsChan in FIFO order, batching consecutive
+// reads and serializing writes.
 func (m *RWMonitor[T]) StartRWMonitor() {
 	for {
 		select {
@@ -134,7 +146,8 @@ func (m *RWMonitor[T]) StartRWMonitor() {
 	}
 }
 
-// Clean up the RWMonitor by closing channels and clearing the requests queue
+// CleanUp closes all channels and resets the monitor state.
+// Called automatically by StopChan after all in-flight operations finish.
 func (m *RWMonitor[T]) CleanUp() {
 	// Clear the requests queue
 
@@ -146,7 +159,7 @@ func (m *RWMonitor[T]) CleanUp() {
 	close(m.StopChan)
 
 	// Create new channels to allow restarting the monitor
-	m.RequestsChan = make(chan interface{})
+	m.RequestsChan = make(chan any)
 	m.checkQueueChan = make(chan struct{}, 1)
 	m.StopChan = make(chan *sync.WaitGroup)
 }

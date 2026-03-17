@@ -44,7 +44,7 @@ monitor.RequestsChan <- WriteReq[int]{Data: id, ResChan: resChan}
 err := <-resChan // Get output from channel
 ```
 Provided channel should be buffered because read/write operations
-palce values in channels in a non blocking way, leaving it unchanged when blocked.<br>
+place values in channels in a non blocking way, leaving it unchanged when blocked.<br>
 Now let's stop the monitor:
 ```go
 var wgStop sync.WaitGroup
@@ -59,24 +59,11 @@ read/write's start and end. You can clone repo and run the test by command:
 ```bash
 go test -race -run TestRWMonitor
 ```
-Unfortunately Go Analyser applied by -race flag gets lost on the CleanUp with still ongoing read/write operations.
-That's because it does not understand synchronizing requestsQueue field achieved here:
-```go 
-// rwmonitor.go
-// Wait for all readers and writers to finish
-m.readersCountMu.Lock()
-readersCount := m.readersCount
-m.readersCountMu.Unlock()
-writing := atomic.LoadInt32(&m.writing)
-if readersCount > 0 || writing > 0 {
-    <-m.checkQueueChan
-}
-```
-To exclude false warning of from the -race flag Analyser in the test there is a simple sleep made to make sure every read/write operation has fully ended:
-```go
-// rwmonitor_test.go
-time.Sleep(100 * time.Millisecond)
-```
+The test uses `time.Sleep(100ms)` before stopping the monitor to avoid a false positive from the race detector.
+The root cause: `operationsWG.Done()` is called via `defer` inside the user-provided read/write functions —
+before the internal `read()`/`write()` goroutine finishes its bookkeeping (decrementing `readersCount`, sending the signal).
+So `operationsWG.Wait()` only guarantees the user functions completed, not that the goroutines fully exited.
+The sleep gives those goroutines time to finish, ensuring `CleanUp` does not race with them on channel operations.
 
 ## License
 MIT License

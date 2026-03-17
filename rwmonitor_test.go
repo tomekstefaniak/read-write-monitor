@@ -6,10 +6,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"sync/atomic"
 )
 
-const TEST_GOROUTINES = 20
-const TEST_TTL = 20
+const testGoroutines = 20
+const testTTL = 20
 
 func Logger(ch chan string, wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -22,16 +23,25 @@ func TestRWMonitor(t *testing.T) { // Data that will be read and written that is
 	vulnerable := 0
 
 	// Channel for logging
-	logChan := make(chan string, TEST_GOROUTINES*TEST_TTL*2) // Bigger buffer for all logs
+	logChan := make(chan string, testGoroutines*testTTL*2) // Bigger buffer for all logs
 	var loggerWG sync.WaitGroup
 	var operationsWG sync.WaitGroup
 
 	loggerWG.Add(1)
 	go Logger(logChan, &loggerWG)
 
+	// Atomic counters to track active readers and writers for logging purposes
+	var activeReaders atomic.Int32
+	var activeWriter atomic.Int32
+
 	// Example read function
 	unsafeReadFunc := func() (int, error) {
 		defer operationsWG.Done()
+		activeReaders.Add(1)
+		defer activeReaders.Add(-1)
+		if activeWriter.Load() > 0 {
+			t.Error("Read operation started while a write operation is active")
+		}
 
 		id := rand.Intn(int(^uint32(0))) // Generate a random ID for the reader to identify it on the logs
 		logChan <- fmt.Sprintf("\033[38;5;214m<< %x started  reading\033[0m", id)
@@ -46,6 +56,11 @@ func TestRWMonitor(t *testing.T) { // Data that will be read and written that is
 	// Example write function
 	unsafeWriteFunc := func(data int) error {
 		defer operationsWG.Done()
+		activeWriter.Add(1)
+		defer activeWriter.Add(-1)
+		if activeReaders.Load() > 0 {
+			t.Error("Write operation started while read operations are active")
+		}
 
 		id := rand.Intn(int(^uint32(0))) // Generate a random ID for the reader to identify it on the logs
 		logChan <- fmt.Sprintf("\033[38;5;45m>> %x started  writing\033[0m", id)
@@ -61,11 +76,11 @@ func TestRWMonitor(t *testing.T) { // Data that will be read and written that is
 	monitor := NewRWMonitor(unsafeReadFunc, unsafeWriteFunc)
 	go monitor.StartRWMonitor()
 
-	operationsWG.Add(TEST_GOROUTINES * TEST_TTL)
+	operationsWG.Add(testGoroutines * testTTL)
 
-	for i := 0; i < TEST_GOROUTINES; i++ {
+	for i := 0; i < testGoroutines; i++ {
 		go func(id int) {
-			for ttl := TEST_TTL; ttl > 0; ttl-- {
+			for ttl := testTTL; ttl > 0; ttl-- {
 				if rand.Intn(10) != 0 { // Read operation (90% chance)
 					resChan := make(chan ReadRes[int], 1)
 					monitor.RequestsChan <- ReadReq[int]{ResChan: resChan} // Send a read request
