@@ -1,5 +1,5 @@
 # Read Write Monitor
-Repo contains single read write monitor implemented using Stateful Goroutine pattern.
+A generic FIFO read-write monitor in Go with batched concurrent reads and serialized writes.
 
 ## Requirements
 * go ^1.20
